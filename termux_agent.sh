@@ -1,85 +1,83 @@
 #!/bin/bash
 
-# Directorio del agente
+# Colores
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+BLUE='\033[0;34m'
+PURPLE='\033[0;35m'
+CYAN='\033[0;36m'
+NC='\033[0m' # No Color
+
 AGENT_DIR="$HOME/.termux-agent"
 
-# Función para obtener contexto del sistema
 get_system_context() {
-    local pwd=$(pwd)
-    local last_cmds=$(history 5 | tail -n 5 | sed 's/^[ ]*[0-9]*[ ]*//' | tr '\n' ',' | sed 's/,$//')
-    local os_info=$(uname -a)
-    local installed_pkgs=$(pkg list-installed 2>/dev/null | head -n 20 | awk -F/ '{print $1}' | tr '\n' ',' | sed 's/,$//')
+    echo "{\"cwd\": \"$(pwd)\", \"os\": \"$(uname -a)\", \"shell\": \"$SHELL\"}"
+}
+
+process_interaction() {
+    local error_msg="$1"
+    local context="$2"
     
-    echo "{\"cwd\": \"$pwd\", \"last_commands\": \"$last_cmds\", \"os\": \"$os_info\", \"sample_pkgs\": \"$installed_pkgs\"}"
-}
-
-# Función para enviar notificación (requiere termux-api)
-send_termux_notification() {
-    local title="$1"
-    local message="$2"
-    if command -v termux-notification >/dev/null 2>&1; then
-        termux-notification --title "$title" --content "$message"
-    fi
-}
-
-# Función para procesar la salida del agente de IA
-process_ai_output() {
-    local output="$1"
-    local suggestion=$(echo "$output" | sed -n '/--- Sugerencia/,/---/p')
-    local fix_cmd=$(echo "$output" | grep "SUGGESTED_FIX_COMMAND:" | cut -d':' -f2-)
-
-    # Mostrar la sugerencia (sin el comando de corrección oculto)
-    echo "$output" | grep -v "SUGGESTED_FIX_COMMAND:"
-
-    if [ ! -z "$fix_cmd" ]; then
-        echo -n "¿Deseas ejecutar el comando sugerido? ($fix_cmd) [y/N]: "
-        read -r response
-        if [[ "$response" =~ ^([yY][eE][sS]|[yY])$ ]]; then
-            echo "Ejecutando: $fix_cmd"
-            eval "$fix_cmd"
-        else
-            echo "Operación cancelada."
-        fi
+    echo -e "${CYAN}🔍 Analizando error con IA...${NC}"
+    local json_response=$(python3 "$AGENT_DIR/agent.py" "$error_msg" "$context")
+    
+    local analisis=$(echo "$json_response" | jq -r '.analisis')
+    echo -e "\n${YELLOW}📝 ANÁLISIS:${NC} $analisis"
+    
+    echo -e "\n${GREEN}💡 OPCIONES DE SOLUCIÓN:${NC}"
+    local count=$(echo "$json_response" | jq '.opciones | length')
+    
+    if [ "$count" -eq 0 ]; then
+        echo -e "${RED}No se encontraron comandos automáticos.${NC}"
+    else
+        for i in $(seq 0 $((count-1))); do
+            local desc=$(echo "$json_response" | jq -r ".opciones[$i].descripcion")
+            local cmd=$(echo "$json_response" | jq -r ".opciones[$i].comando")
+            echo -e "${BLUE}$((i+1)))${NC} $desc -> ${PURPLE}$cmd${NC}"
+        done
     fi
     
-    # Enviar notificación opcional
-    local clean_suggestion=$(echo "$suggestion" | grep -v "---" | head -n 2 | tr '\n' ' ')
-    send_termux_notification "Sugerencia de Termux AI" "$clean_suggestion"
+    echo -e "${BLUE}c)${NC} Entrar en Modo Chat (Preguntas de seguimiento)"
+    echo -e "${BLUE}n)${NC} Ignorar y continuar"
+    
+    echo -ne "\n${YELLOW}Selecciona una opción:${NC} "
+    read -r opt
+    
+    case $opt in
+        [1-9])
+            local idx=$((opt-1))
+            local cmd=$(echo "$json_response" | jq -r ".opciones[$idx].comando")
+            if [ "$cmd" != "null" ]; then
+                echo -e "${GREEN}Ejecutando:${NC} $cmd"
+                eval "$cmd"
+            fi
+            ;;
+        c|C)
+            python3 "$AGENT_DIR/agent.py" --chat "$error_msg" "$context"
+            ;;
+        *)
+            echo -e "${CYAN}Continuando...${NC}"
+            ;;
+    esac
 }
 
-# Función para manejar comandos no encontrados
 command_not_found_handle() {
     local cmd="$1"
-    local context=$(get_system_context)
-    
-    echo "Comando no encontrado: $cmd"
-    echo "Consultando al Agente de IA..."
-    
-    local ai_output=$(python3 "$AGENT_DIR/agent.py" "Comando no encontrado: $cmd" "$context")
-    process_ai_output "$ai_output"
-    
+    echo -e "${RED}Error: Comando '$cmd' no encontrado.${NC}"
+    process_interaction "Comando no encontrado: $cmd" "$(get_system_context)"
     return 127
 }
 
-# Función para verificar errores después de cada comando
 check_last_error() {
-    local exit_status=$?
-    if [ $exit_status -ne 0 ] && [ $exit_status -ne 127 ]; then
+    local status=$?
+    if [ $status -ne 0 ] && [ $status -ne 127 ]; then
         local last_cmd=$(history 1 | sed 's/^[ ]*[0-9]*[ ]*//')
-        local context=$(get_system_context)
-        
-        echo "El comando '$last_cmd' falló (Código: $exit_status)"
-        echo "Consultando al Agente de IA..."
-        
-        local ai_output=$(python3 "$AGENT_DIR/agent.py" "El comando '$last_cmd' falló con el código de salida $exit_status" "$context")
-        process_ai_output "$ai_output"
+        echo -e "${RED}⚠ El comando '$last_cmd' falló con código $status${NC}"
+        process_interaction "El comando '$last_cmd' falló con código $status" "$(get_system_context)"
     fi
 }
 
-# Función para análisis manual
 analyze_error() {
-    local error_msg="$1"
-    local context=$(get_system_context)
-    local ai_output=$(python3 "$AGENT_DIR/agent.py" "$error_msg" "$context")
-    process_ai_output "$ai_output"
+    process_interaction "$1" "$(get_system_context)"
 }

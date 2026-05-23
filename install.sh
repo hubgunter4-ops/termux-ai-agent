@@ -7,7 +7,7 @@ echo "Iniciando instalación del Agente de IA Mejorado para Termux..."
 
 # 1. Instalar paquetes necesarios de Termux
 echo "Instalando paquetes necesarios (python, termux-api)..."
-pkg install -y python termux-api
+pkg install -y python termux-api jq
 
 # 2. Crear directorio del agente
 if [ ! -d "$AGENT_DIR" ]; then
