@@ -333,7 +333,7 @@ def safe_workspace_path(
     relative = PurePosixPath(name)
     if relative.is_absolute() or any(part in {"..", "."} for part in relative.parts):
         raise ValueError(f"La ruta debe ser relativa al proyecto y no puede salir del directorio: {name}")
-    if any(part in IGNORED_DIRS or part in SENSITIVE_NAMES for part in relative.parts):
+    if any(part in IGNORED_DIRS or part in SENSITIVE_NAMES or part.startswith(".env") for part in relative.parts):
         raise ValueError(f"No se permite acceder a una ruta excluida o sensible: {name}")
 
     path = (root / Path(*relative.parts)).resolve(strict=not allow_missing)

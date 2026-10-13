@@ -21,6 +21,13 @@ class AgentSafetyTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 agent.safe_workspace_path(root, ".env")
 
+    def test_rejects_env_variants(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp).resolve()
+            (root / ".env.development").write_text("SECRET=x", encoding="utf-8")
+            with self.assertRaises(ValueError):
+                agent.safe_workspace_path(root, ".env.development")
+
     def test_rejects_symlink_outside_workspace(self):
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp) / "project"
