@@ -1,43 +1,39 @@
-#!/bin/bash
+#!/data/data/com.termux/files/usr/bin/bash
+set -eu
 
+SCRIPT_DIR="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"
 AGENT_DIR="$HOME/.termux-agent"
 BASHRC_FILE="$HOME/.bashrc"
 
-echo "Iniciando instalación del Agente de IA Mejorado para Termux..."
+printf '%s\n' 'Instalando Termux AI Code Assistant...'
+pkg install -y python
+python -m pip install --upgrade openai
+mkdir -p "$AGENT_DIR"
+install -m 755 "$SCRIPT_DIR/agent.py" "$AGENT_DIR/agent.py"
+install -m 644 "$SCRIPT_DIR/termux_agent.sh" "$AGENT_DIR/termux_agent.sh"
 
-# 1. Instalar paquetes necesarios de Termux
-echo "Instalando paquetes necesarios (python, termux-api)..."
-pkg install -y python termux-api jq
-
-# 2. Crear directorio del agente
-if [ ! -d "$AGENT_DIR" ]; then
-    mkdir -p "$AGENT_DIR"
-    echo "Directorio $AGENT_DIR creado."
+if [ ! -f "$AGENT_DIR/env" ]; then
+    cat > "$AGENT_DIR/env" <<'ENVEOF'
+# Configura un endpoint compatible con OpenAI.
+# Ejemplo para Ollama en otro equipo de la red (sustituye la IP):
+# export AI_BASE_URL="http://192.168.1.20:11434/v1"
+# export AI_API_KEY="ollama"
+# export AI_MODEL="qwen2.5-coder:7b"
+# Para OpenAI, define AI_API_KEY o OPENAI_API_KEY y AI_MODEL.
+ENVEOF
+    chmod 600 "$AGENT_DIR/env"
 fi
 
-# 3. Copiar archivos del agente
-cp agent.py "$AGENT_DIR/agent.py"
-cp termux_agent.sh "$AGENT_DIR/termux_agent.sh"
-chmod +x "$AGENT_DIR/termux_agent.sh"
-echo "Archivos actualizados en $AGENT_DIR."
-
-# 4. Instalar dependencias de Python
-echo "Instalando biblioteca openai..."
-pip install openai
-
-# 5. Configurar .bashrc
-if ! grep -q "# Termux AI Agent" "$BASHRC_FILE"; then
-    echo -e "\n# Termux AI Agent" >> "$BASHRC_FILE"
-    echo "source $AGENT_DIR/termux_agent.sh" >> "$BASHRC_FILE"
-    echo "export OPENAI_API_KEY=\"TU_CLAVE_API_DE_OPENAI\"" >> "$BASHRC_FILE"
-    echo "# PROMPT_COMMAND=\"check_last_error;\$PROMPT_COMMAND\"" >> "$BASHRC_FILE"
-    echo "Configuración añadida a $BASHRC_FILE."
-else
-    echo "Configuración ya presente en $BASHRC_FILE."
+mkdir -p "$(dirname "$BASHRC_FILE")"
+[ -f "$BASHRC_FILE" ] || touch "$BASHRC_FILE"
+if ! grep -Fq '# Termux AI Code Assistant' "$BASHRC_FILE"; then
+    {
+        printf '\n# Termux AI Code Assistant\n'
+        printf 'source "$HOME/.termux-agent/termux_agent.sh"\n'
+    } >> "$BASHRC_FILE"
 fi
 
-echo -e "\n--- INSTALACIÓN COMPLETADA ---"
-echo "1. Edita ~/.bashrc y pon tu OPENAI_API_KEY."
-echo "2. Ejecuta: source ~/.bashrc"
-echo "3. (Opcional) Instala la App 'Termux:API' desde F-Droid para habilitar notificaciones."
-echo "4. ¡Prueba escribiendo un comando que no exista!"
+printf '\nInstalación completada. Configura el proveedor en %s\n' "$AGENT_DIR/env"
+printf '%s\n' 'Luego ejecuta: source ~/.bashrc'
+printf '%s\n' 'Comandos: termux-ai ask "..." | termux-ai code "..." --file archivo.py | termux-ai run -- python -m pytest'
+printf '%s\n' 'Para notificaciones opcionales instala el complemento Termux:API y ejecuta: pkg install termux-api'
