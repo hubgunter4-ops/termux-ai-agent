@@ -65,7 +65,23 @@ def request_api_json(
         with urllib.request.urlopen(request, timeout=timeout) as response:
             result = json.loads(response.read().decode("utf-8"))
     except urllib.error.HTTPError as exc:
-        raise RuntimeError(f"El endpoint respondió HTTP {exc.code}; revisa la clave, la URL y el modelo configurados.") from None
+        detail = ""
+        try:
+            error_data = json.loads(exc.read().decode("utf-8"))
+            error = error_data.get("error", error_data)
+            if isinstance(error, dict) and isinstance(error.get("message"), str):
+                detail = error["message"]
+            elif isinstance(error, str):
+                detail = error
+        except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+            pass
+        detail = detail.replace(api_key, "[CLAVE OCULTA]")[:500] if api_key else detail[:500]
+        message = f"El endpoint respondió HTTP {exc.code}"
+        if detail:
+            message += f": {detail}"
+        else:
+            message += "; revisa la clave, la URL y el modelo configurados"
+        raise RuntimeError(message) from None
     except (urllib.error.URLError, TimeoutError, OSError):
         raise RuntimeError("No se pudo conectar con el endpoint. Revisa la URL, la red y que el servidor esté activo.") from None
     except (UnicodeDecodeError, json.JSONDecodeError):
@@ -281,7 +297,8 @@ def command_wizard(_args: argparse.Namespace) -> int:
         if choice == "1":
             question = input(paint("¿Qué quieres resolver o entender? ", "bold")).strip()
             if question:
-                selected = select_context_files(root)
+                attach = input("¿Quieres adjuntar archivos del proyecto como contexto? [y/N]: ").strip().lower()
+                selected = select_context_files(root) if attach in {"y", "yes", "s", "sí", "si"} else []
                 command_ask(argparse.Namespace(question=question, file=selected, notify=False))
             continue
         if choice == "2":

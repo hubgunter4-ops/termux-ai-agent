@@ -145,7 +145,7 @@ termux-ai
 termux-ai wizard
 ```
 
-El menú ofrece analizar una pregunta o error, diseñar/modificar código, ejecutar un comando confirmado, configurar OpenAI/Ollama o salir. La terminal usa colores cuando son compatibles. Para desactivarlos, ejecuta `NO_COLOR=1 termux-ai`.
+El menú ofrece analizar una pregunta o error, diseñar/modificar código, ejecutar un comando confirmado, configurar OpenAI/Ollama o salir. Al preguntar, primero consulta si quieres adjuntar archivos; por defecto no los adjunta ni muestra el listado. Solo si respondes que sí aparece la selección de archivos. La terminal usa colores cuando son compatibles. Para desactivarlos, ejecuta `NO_COLOR=1 termux-ai`.
 
 ### Preguntar y analizar un error
 
@@ -255,6 +255,10 @@ El endpoint puede no ofrecer `GET /models`, la URL puede ser incorrecta o la cla
 ### Error HTTP 401 o 403
 
 Comprueba que la clave corresponde al proveedor y que la URL base es la correcta. Para Ollama sin autenticación adicional, el diálogo configura la clave compatible `ollama`; esto no habilita ni protege el acceso de red al servidor.
+
+### Error HTTP 400
+
+El texto devuelto por la API suele indicar la causa concreta, por ejemplo un ID de modelo no válido o un parámetro que ese modelo no admite. La CLI muestra el detalle del proveedor cuando viene en la respuesta, ocultando cualquier aparición literal de la clave. Comprueba ese mensaje antes de cambiar la URL o volver a configurar la clave.
 
 ### Error HTTP 404 o “model not found”
 
