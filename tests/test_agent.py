@@ -98,6 +98,37 @@ class AgentSafetyTests(unittest.TestCase):
                             self.assertEqual(agent.command_code(args), 0)
             self.assertEqual((root / "main.py").read_text(encoding="utf-8"), "print(2)\n")
 
+    def test_wizard_exits_from_menu(self):
+        args = agent.build_parser().parse_args(["wizard"])
+        with patch.object(agent.sys.stdin, "isatty", return_value=True):
+            with patch("builtins.input", return_value="0"):
+                self.assertEqual(agent.command_wizard(args), 0)
+
+    def test_wizard_guides_code_task_into_review_flow(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp).resolve()
+            args = agent.build_parser().parse_args(["wizard"])
+            answers = ["2", "Crear una API REST", "Python y Flask", "Incluye una prueba", "0"]
+            with patch.object(agent.sys.stdin, "isatty", return_value=True):
+                with patch.object(agent, "workspace_root", return_value=root):
+                    with patch.object(agent, "command_code", return_value=0) as code:
+                        with patch("builtins.input", side_effect=answers):
+                            self.assertEqual(agent.command_wizard(args), 0)
+            task = code.call_args.args[0].task
+            self.assertIn("Objetivo: Crear una API REST", task)
+            self.assertIn("Tecnologías preferidas: Python y Flask", task)
+            self.assertIn("Criterios de aceptación: Incluye una prueba", task)
+
+    def test_paint_respects_no_color(self):
+        with patch.object(agent.sys.stdout, "isatty", return_value=True):
+            with patch.dict(agent.os.environ, {"NO_COLOR": "1"}):
+                self.assertEqual(agent.paint("text", "green"), "text")
+
+    def test_empty_cli_defaults_to_wizard(self):
+        with patch.object(agent, "command_wizard", return_value=0) as wizard:
+            self.assertEqual(agent.main([]), 0)
+        wizard.assert_called_once()
+
 
 if __name__ == "__main__":
     unittest.main()

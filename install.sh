@@ -35,5 +35,6 @@ fi
 
 printf '\nInstalación completada. Configura el proveedor en %s\n' "$AGENT_DIR/env"
 printf '%s\n' 'Luego ejecuta: source ~/.bashrc'
-printf '%s\n' 'Comandos: termux-ai ask "..." | termux-ai code "..." --file archivo.py | termux-ai run -- python -m pytest'
+printf '%s\n' 'Abre la interfaz guiada con: termux-ai'
+printf '%s\n' 'También disponibles: termux-ai ask "..." | termux-ai code "..." --file archivo.py | termux-ai run -- python -m pytest'
 printf '%s\n' 'Para notificaciones opcionales instala el complemento Termux:API y ejecuta: pkg install termux-api'

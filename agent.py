@@ -67,6 +67,99 @@ def send_notification(enabled: bool, title: str, message: str) -> None:
         print("No se pudo enviar la notificación de Termux:API.", file=sys.stderr)
 
 
+ANSI_COLORS = {"red": "31", "green": "32", "yellow": "33", "blue": "34", "cyan": "36", "bold": "1"}
+
+
+def paint(text: str, color: str, *, enabled: bool | None = None) -> str:
+    if enabled is None:
+        enabled = sys.stdout.isatty() and "NO_COLOR" not in os.environ and os.getenv("TERM") != "dumb"
+    code = ANSI_COLORS.get(color)
+    return f"\033[{code}m{text}\033[0m" if enabled and code else text
+
+
+def print_banner() -> None:
+    print(paint("+--------------------------------------------------+", "cyan"))
+    print(paint("|       TERMUX AI  /  ASISTENTE DE CÓDIGO          |", "bold"))
+    print(paint("+--------------------------------------------------+", "cyan"))
+
+
+def select_context_files(root: Path) -> list[str]:
+    files = project_file_list(root, limit=40)
+    if not files:
+        print(paint("No encontré archivos de proyecto para seleccionar.", "yellow"))
+        return []
+    print(paint("Archivos disponibles (máx. 40):", "cyan"))
+    for index, name in enumerate(files, start=1):
+        print(f"  {paint(f'{index:>2}', 'yellow')}. {name}")
+    print("Escribe números separados por comas; Enter para no adjuntar archivos.")
+    raw = input(paint("Archivos: ", "bold")).strip()
+    if not raw:
+        return []
+    selected: list[str] = []
+    for value in raw.split(","):
+        value = value.strip()
+        if not value.isdigit() or not 1 <= int(value) <= len(files):
+            raise ValueError(f"Selección de archivo no válida: {value}")
+        name = files[int(value) - 1]
+        if name not in selected:
+            selected.append(name)
+    if len(selected) > 10:
+        raise ValueError("Selecciona como máximo 10 archivos.")
+    return selected
+
+
+def command_wizard(_args: argparse.Namespace) -> int:
+    if not sys.stdin.isatty():
+        raise RuntimeError("La interfaz guiada requiere una terminal interactiva.")
+    root = workspace_root()
+    while True:
+        print()
+        print_banner()
+        print("  1) Preguntar o analizar un error")
+        print("  2) Diseñar o modificar código")
+        print("  3) Ejecutar un comando revisado")
+        print("  0) Salir")
+        choice = input(paint("Elige una opción: ", "bold")).strip()
+
+        if choice == "0":
+            print(paint("Hasta luego.", "cyan"))
+            return 0
+        if choice == "1":
+            question = input(paint("¿Qué quieres resolver o entender? ", "bold")).strip()
+            if question:
+                selected = select_context_files(root)
+                command_ask(argparse.Namespace(question=question, file=selected, notify=False))
+            continue
+        if choice == "2":
+            print(paint("PASO 1/3 · Define el cambio", "cyan"))
+            goal = input("¿Qué quieres crear o modificar? ").strip()
+            if not goal:
+                print(paint("Necesito una descripción para continuar.", "yellow"))
+                continue
+            stack = input("Lenguaje o tecnologías preferidas (opcional): ").strip()
+            criteria = input("¿Cómo sabremos que quedó bien? (opcional): ").strip()
+            selected = select_context_files(root)
+            task_parts = [f"Objetivo: {goal}"]
+            if stack:
+                task_parts.append(f"Tecnologías preferidas: {stack}")
+            if criteria:
+                task_parts.append(f"Criterios de aceptación: {criteria}")
+            print(paint("PASO 2/3 · Generar y revisar el diff", "cyan"))
+            command_code(argparse.Namespace(task="\n".join(task_parts), file=selected, notify=False))
+            print(paint("PASO 3/3 · Ejecuta pruebas con la opción 3 cuando estés listo.", "green"))
+            continue
+        if choice == "3":
+            print(paint("Indica el comando exacto; se ejecutará sin shell y requerirá confirmación.", "yellow"))
+            raw = input("Comando: ").strip()
+            if not raw:
+                continue
+            argv = shlex.split(raw)
+            cwd = input("Subdirectorio del proyecto (Enter = raíz): ").strip() or None
+            command_run(argparse.Namespace(command=argv, cwd=cwd, notify=False))
+            continue
+        print(paint("Opción no reconocida. Elige 0, 1, 2 o 3.", "red"))
+
+
 def workspace_root() -> Path:
     return Path.cwd().resolve()
 
@@ -234,7 +327,16 @@ def print_diffs(changes: list[dict[str, str]]) -> None:
             fromfile=f"a/{change['path']}" if change["old"] else "/dev/null",
             tofile=f"b/{change['path']}",
         )
-        print("".join(diff), end="")
+        for line in diff:
+            visible = line.rstrip("\n")
+            if line.startswith("+++") or line.startswith("---") or line.startswith("@@"):
+                print(paint(visible, "cyan"))
+            elif line.startswith("+"):
+                print(paint(visible, "green"))
+            elif line.startswith("-"):
+                print(paint(visible, "red"))
+            else:
+                print(visible)
 
 
 def apply_changes(root: Path, changes: list[dict[str, str]]) -> None:
@@ -299,8 +401,11 @@ def command_run(args: argparse.Namespace) -> int:
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="Asistente de programación para Termux con ejecución confirmada.")
+    parser = argparse.ArgumentParser(description="Asistente interactivo de programación para Termux.")
     subparsers = parser.add_subparsers(dest="mode", required=True)
+
+    wizard = subparsers.add_parser("wizard", aliases=["menu"], help="abrir la interfaz guiada interactiva")
+    wizard.set_defaults(handler=command_wizard)
 
     ask = subparsers.add_parser("ask", help="preguntar al asistente")
     ask.add_argument("question", help="pregunta o error que quieres analizar")
@@ -323,6 +428,10 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main(argv: list[str] | None = None) -> int:
+    if argv is None:
+        argv = sys.argv[1:]
+    if not argv:
+        argv = ["wizard"]
     parser = build_parser()
     args = parser.parse_args(argv)
     try:
