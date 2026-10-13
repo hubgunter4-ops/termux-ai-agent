@@ -18,7 +18,7 @@ chmod +x install.sh
 source ~/.bashrc
 ```
 
-El instalador instala Python y el cliente `openai`, conserva cualquier archivo de configuración existente y no inserta claves API ficticias en `.bashrc`.
+El instalador solo necesita el paquete Python de Termux. El asistente usa la biblioteca estándar para llamar a la API compatible con OpenAI, por lo que no instala el SDK `openai`, `jiter` ni `maturin` y no requiere Rust en Android. Conserva cualquier archivo de configuración existente y no inserta claves API ficticias en `.bashrc`.
 
 ## Configurar un modelo
 

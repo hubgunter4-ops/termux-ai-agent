@@ -7,7 +7,6 @@ BASHRC_FILE="$HOME/.bashrc"
 
 printf '%s\n' 'Instalando Termux AI Code Assistant...'
 pkg install -y python
-python -m pip install --upgrade openai
 mkdir -p "$AGENT_DIR"
 install -m 755 "$SCRIPT_DIR/agent.py" "$AGENT_DIR/agent.py"
 install -m 644 "$SCRIPT_DIR/termux_agent.sh" "$AGENT_DIR/termux_agent.sh"
@@ -33,7 +32,7 @@ if ! grep -Fq '# Termux AI Code Assistant' "$BASHRC_FILE"; then
     } >> "$BASHRC_FILE"
 fi
 
-printf '\nInstalación completada. Configura el proveedor en %s\n' "$AGENT_DIR/env"
+printf '\nInstalación completada. No se requieren paquetes pip ni Rust. Configura el proveedor con termux-ai configure\n'
 printf '%s\n' 'Luego ejecuta: source ~/.bashrc'
 printf '%s\n' 'Abre la interfaz guiada con: termux-ai'
 printf '%s\n' 'También disponibles: termux-ai ask "..." | termux-ai code "..." --file archivo.py | termux-ai run -- python -m pytest'

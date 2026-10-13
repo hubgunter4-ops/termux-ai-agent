@@ -191,19 +191,38 @@ class AgentSafetyTests(unittest.TestCase):
         self.assertEqual(settings["provider"], "ollama")
 
     def test_chat_and_code_use_different_configured_models(self):
-        from types import SimpleNamespace
-
-        client = type("Client", (), {})()
-        client.chat = type("Chat", (), {})()
-        client.chat.completions = type("Completions", (), {})()
-        client.chat.completions.create = unittest.mock.Mock(
-            return_value=SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(content="ok"))])
-        )
-        with patch.object(agent, "make_client", return_value=client):
-            with patch.object(agent, "provider_settings", return_value={"model": "chat-model", "code_model": "code-model"}):
+        response = {"choices": [{"message": {"content": "ok"}}]}
+        with patch.object(agent, "get_api_config", return_value={"api_key": "secret", "base_url": "https://api.test/v1", "model": "chat-model", "code_model": "code-model"}):
+            with patch.object(agent, "request_api_json", return_value=response) as request:
                 agent.get_ai_response([{"role": "user", "content": "hello"}], purpose="chat")
                 agent.get_ai_response([{"role": "user", "content": "code"}], purpose="code")
-        self.assertEqual([call.kwargs["model"] for call in client.chat.completions.create.call_args_list], ["chat-model", "code-model"])
+        self.assertEqual([call.args[3]["model"] for call in request.call_args_list], ["chat-model", "code-model"])
+
+    def test_model_discovery_reads_openai_compatible_catalog(self):
+        with patch.object(agent, "request_api_json", return_value={"data": [{"id": "model-b"}, {"id": "model-a"}, {"object": "permission"}]}) as request:
+            models = agent.list_available_models("token", "http://localhost:11434/v1")
+        self.assertEqual(models, ["model-a", "model-b"])
+        self.assertEqual(request.call_args.args[2], "/models")
+
+    def test_http_request_uses_openai_compatible_chat_endpoint(self):
+        class FakeResponse:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_args):
+                return False
+
+            def read(self):
+                return b'{"ok": true}'
+
+        payload = {"model": "test-model", "messages": [{"role": "user", "content": "hello"}]}
+        with patch.object(agent.urllib.request, "urlopen", return_value=FakeResponse()) as urlopen:
+            result = agent.request_api_json("secret-value", "https://api.test/v1", "/chat/completions", payload)
+        request = urlopen.call_args.args[0]
+        self.assertEqual(request.full_url, "https://api.test/v1/chat/completions")
+        self.assertEqual(request.get_header("Authorization"), "Bearer secret-value")
+        self.assertEqual(json.loads(request.data.decode("utf-8")), payload)
+        self.assertEqual(result, {"ok": True})
 
     def test_configure_selects_models_discovered_from_endpoint(self):
         with tempfile.TemporaryDirectory() as temp:
