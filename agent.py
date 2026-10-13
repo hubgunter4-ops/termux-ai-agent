@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import difflib
+import getpass
 import json
 import os
 import shlex
@@ -17,25 +18,151 @@ from typing import Any
 from openai import OpenAI
 
 DEFAULT_MODEL = "gpt-4.1-mini"
+OPENAI_DEFAULT_URL = "https://api.openai.com/v1"
+OLLAMA_DEFAULT_URL = "http://127.0.0.1:11434/v1"
+OLLAMA_DEFAULT_MODEL = "qwen2.5-coder:7b"
+PLACEHOLDER_KEYS = {"TU_CLAVE_API_DE_OPENAI", "your-api-key", "changeme", "<your-api-key>"}
 IGNORED_DIRS = {".git", ".venv", "venv", "node_modules", "__pycache__", ".tox"}
 SENSITIVE_NAMES = {".env", ".env.local", ".env.production", "id_rsa", "id_ed25519"}
 BLOCKED_COMMANDS = {"sudo", "su", "rm", "rmdir", "dd", "mkfs", "wipefs", "shutdown", "reboot", "poweroff"}
 
 
+def saved_config_path() -> Path:
+    return Path(os.getenv("TERMUX_AI_CONFIG", str(Path.home() / ".termux-agent" / "config.json")))
+
+
+def load_saved_config(config_path: Path | None = None) -> dict[str, str]:
+    path = config_path or saved_config_path()
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        return {}
+    except (OSError, json.JSONDecodeError) as exc:
+        raise RuntimeError(f"No se pudo leer la configuración privada {path}: {exc}") from exc
+    if not isinstance(data, dict):
+        raise RuntimeError("El archivo de configuración debe contener un objeto JSON.")
+    return {key: value for key, value in data.items() if key in {"provider", "api_key", "base_url", "model", "code_model"} and isinstance(value, str)}
+
+
+def list_available_models(api_key: str, base_url: str) -> list[str]:
+    """Read model identifiers exposed by OpenAI or an OpenAI-compatible endpoint."""
+    try:
+        client = OpenAI(api_key=api_key, base_url=base_url or None, timeout=12.0, max_retries=0)
+        page = client.models.list()
+        models = sorted({item.id for item in page.data if getattr(item, "id", None)})
+        return models[:40]
+    except Exception:
+        print("No se pudo cargar la lista del endpoint; podrás escribir los identificadores manualmente.", file=sys.stderr)
+        return []
+
+
+def select_model(role: str, models: list[str], default: str, *, input_fn=input, allow_same: bool = False) -> str:
+    suggested = default if not models or default in models else models[0]
+    if models:
+        print(paint(f"Modelos disponibles para {role}:", "cyan"))
+        for index, model_name in enumerate(models, start=1):
+            print(f"  {index:>2}) {model_name}")
+    prompt = (
+        f"Modelo para {role} (Enter = usar el modelo de conversación; número o identificador): "
+        if allow_same
+        else f"Modelo para {role} [{suggested}] (número o identificador): "
+    )
+    answer = input_fn(prompt).strip()
+    if allow_same and not answer:
+        return ""
+    if not answer:
+        return suggested
+    if answer.isdigit() and models and 1 <= int(answer) <= len(models):
+        return models[int(answer) - 1]
+    return answer
+
+
+def configure_provider(
+    config_path: Path | None = None,
+    *,
+    input_fn=input,
+    secret_fn=getpass.getpass,
+) -> dict[str, str]:
+    print(paint("CONFIGURACIÓN DEL PROVEEDOR", "cyan"))
+    print("  1) OpenAI (solicitar clave API de forma oculta)")
+    print("  2) Ollama (solicitar URL del servidor y modelo)")
+    choice = input_fn("Proveedor [1/2]: ").strip()
+    if choice == "1":
+        api_key = secret_fn("Clave API de OpenAI (no se mostrará): ").strip()
+        if not api_key:
+            raise ValueError("La clave API no puede estar vacía.")
+        base_url = input_fn(f"URL base de la API [{OPENAI_DEFAULT_URL}]: ").strip() or OPENAI_DEFAULT_URL
+        if not base_url.startswith(("http://", "https://")):
+            raise ValueError("La URL base debe comenzar con http:// o https://.")
+        base_url = base_url.rstrip("/")
+        available = list_available_models(api_key, base_url)
+        model = select_model("conversación", available, DEFAULT_MODEL, input_fn=input_fn)
+        code_model = select_model("generación de código", available, model, input_fn=input_fn, allow_same=True)
+        config = {"provider": "openai", "api_key": api_key, "base_url": base_url.rstrip("/"), "model": model, "code_model": code_model}
+    elif choice == "2":
+        base_url = input_fn(f"URL del servidor Ollama [{OLLAMA_DEFAULT_URL}]: ").strip() or OLLAMA_DEFAULT_URL
+        if not base_url.startswith(("http://", "https://")):
+            raise ValueError("La URL del servidor debe comenzar con http:// o https://.")
+        base_url = base_url.rstrip("/")
+        available = list_available_models("ollama", base_url)
+        model = select_model("conversación", available, OLLAMA_DEFAULT_MODEL, input_fn=input_fn)
+        code_model = select_model("generación de código", available, model, input_fn=input_fn, allow_same=True)
+        config = {"provider": "ollama", "api_key": "ollama", "base_url": base_url.rstrip("/"), "model": model, "code_model": code_model}
+    else:
+        raise ValueError("Selecciona 1 para OpenAI o 2 para Ollama.")
+
+    path = config_path or saved_config_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_suffix(path.suffix + ".tmp")
+    temporary.write_text(json.dumps(config, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    temporary.chmod(0o600)
+    temporary.replace(path)
+    path.chmod(0o600)
+    print(paint(f"Configuración guardada en {path} (permisos privados).", "green"))
+    if config["provider"] == "ollama":
+        print("Asegúrate de que el teléfono pueda alcanzar esa URL y de que el modelo esté instalado en el servidor.")
+    return config
+
+
+def provider_settings(*, prompt_if_missing: bool = False) -> dict[str, str]:
+    config = load_saved_config()
+    env_key = os.getenv("AI_API_KEY") or os.getenv("OPENAI_API_KEY")
+    if env_key and env_key.strip() in PLACEHOLDER_KEYS:
+        env_key = None
+    env_base = os.getenv("AI_BASE_URL")
+    env_model = os.getenv("AI_MODEL")
+    env_code_model = os.getenv("AI_CODE_MODEL")
+    if env_key:
+        config["api_key"] = env_key
+    if env_base:
+        config["base_url"] = env_base
+    if env_model:
+        config["model"] = env_model
+    if env_code_model:
+        config["code_model"] = env_code_model
+    if not config.get("api_key") and prompt_if_missing and sys.stdin.isatty():
+        config = configure_provider()
+    return config
+
+
 def make_client() -> OpenAI:
-    base_url = os.getenv("AI_BASE_URL") or None
-    api_key = os.getenv("AI_API_KEY") or os.getenv("OPENAI_API_KEY")
+    config = provider_settings(prompt_if_missing=True)
+    api_key = config.get("api_key")
     if not api_key:
-        raise RuntimeError(
-            "Falta AI_API_KEY (o OPENAI_API_KEY). Para un servidor compatible, "
-            "configura AI_BASE_URL y AI_API_KEY; en Ollama la clave puede ser 'ollama'."
-        )
-    return OpenAI(api_key=api_key, base_url=base_url, timeout=120.0, max_retries=1)
+        raise RuntimeError("Falta la configuración del proveedor. Ejecuta `termux-ai configure` en una terminal interactiva.")
+    return OpenAI(
+        api_key=api_key,
+        base_url=config.get("base_url") or None,
+        timeout=120.0,
+        max_retries=1,
+    )
 
 
-def get_ai_response(messages: list[dict[str, str]], *, max_tokens: int = 1200) -> str:
+def get_ai_response(messages: list[dict[str, str]], *, max_tokens: int = 1200, purpose: str = "chat") -> str:
     client = make_client()
-    model = os.getenv("AI_MODEL", DEFAULT_MODEL)
+    settings = provider_settings()
+    model = settings.get("code_model") if purpose == "code" else None
+    model = model or settings.get("model", DEFAULT_MODEL)
     response = client.chat.completions.create(
         model=model,
         messages=messages,
@@ -118,6 +245,7 @@ def command_wizard(_args: argparse.Namespace) -> int:
         print("  1) Preguntar o analizar un error")
         print("  2) Diseñar o modificar código")
         print("  3) Ejecutar un comando revisado")
+        print("  4) Configurar OpenAI u Ollama")
         print("  0) Salir")
         choice = input(paint("Elige una opción: ", "bold")).strip()
 
@@ -157,7 +285,10 @@ def command_wizard(_args: argparse.Namespace) -> int:
             cwd = input("Subdirectorio del proyecto (Enter = raíz): ").strip() or None
             command_run(argparse.Namespace(command=argv, cwd=cwd, notify=False))
             continue
-        print(paint("Opción no reconocida. Elige 0, 1, 2 o 3.", "red"))
+        if choice == "4":
+            configure_provider()
+            continue
+        print(paint("Opción no reconocida. Elige 0, 1, 2, 3 o 4.", "red"))
 
 
 def workspace_root() -> Path:
@@ -228,6 +359,20 @@ def project_file_list(root: Path, limit: int = 160) -> list[str]:
     return files
 
 
+def infer_model_route(question: str, files: list[str] | None = None) -> str:
+    if files:
+        return "code"
+    lowered = question.casefold()
+    code_cues = (
+        "código", "codigo", "program", "script", "función", "funcion", "clase ",
+        "crear", "crea ", "genera", "generar", "modifica", "modificar", "actualiza", "implementa",
+        "corrige", "arreglar", "refactor", "depurar", "debug", "bug", "stack trace", "traceback", "compilar",
+        "compilación", "compile", "error de", "archivo", "repositorio", "prueba unitaria",
+        "unit test", "test de", "python", "javascript", "typescript", "bash", "java", "rust",
+    )
+    return "code" if any(cue in lowered for cue in code_cues) else "chat"
+
+
 def command_ask(args: argparse.Namespace) -> int:
     root = workspace_root()
     files = read_selected_files(root, args.file or [])
@@ -246,7 +391,10 @@ def command_ask(args: argparse.Namespace) -> int:
         },
         {"role": "user", "content": f"Contexto del proyecto (solo archivos seleccionados):\n{json.dumps(context, ensure_ascii=False)}\n\nPregunta:\n{args.question}"},
     ]
-    answer = get_ai_response(messages)
+    route = getattr(args, "route", "auto")
+    if route == "auto":
+        route = infer_model_route(args.question, args.file or [])
+    answer = get_ai_response(messages, purpose=route)
     print(answer)
     send_notification(getattr(args, "notify", False), "Respuesta del asistente", answer)
     return 0
@@ -293,7 +441,7 @@ def generate_file_changes(root: Path, task: str, selected: dict[str, str]) -> li
         },
         {"role": "user", "content": json.dumps(prompt, ensure_ascii=False)},
     ]
-    data = parse_model_json(get_ai_response(messages, max_tokens=4000))
+    data = parse_model_json(get_ai_response(messages, max_tokens=4000, purpose="code"))
     changes = data["files"]
     if len(changes) > 12:
         raise ValueError("El modelo propuso más de 12 archivos; acota la solicitud.")
@@ -400,6 +548,13 @@ def command_run(args: argparse.Namespace) -> int:
     return completed.returncode
 
 
+def command_configure(_args: argparse.Namespace) -> int:
+    if not sys.stdin.isatty():
+        raise RuntimeError("La configuración requiere una terminal interactiva para introducir la clave de forma segura.")
+    configure_provider()
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Asistente interactivo de programación para Termux.")
     subparsers = parser.add_subparsers(dest="mode", required=True)
@@ -407,9 +562,13 @@ def build_parser() -> argparse.ArgumentParser:
     wizard = subparsers.add_parser("wizard", aliases=["menu"], help="abrir la interfaz guiada interactiva")
     wizard.set_defaults(handler=command_wizard)
 
+    configure = subparsers.add_parser("configure", help="configurar OpenAI o la URL/modelo de Ollama")
+    configure.set_defaults(handler=command_configure)
+
     ask = subparsers.add_parser("ask", help="preguntar al asistente")
     ask.add_argument("question", help="pregunta o error que quieres analizar")
     ask.add_argument("--file", action="append", help="archivo de contexto (puede repetirse)")
+    ask.add_argument("--route", choices=["auto", "chat", "code"], default="auto", help="elegir modelo: automático, conversación o código")
     ask.add_argument("--notify", action="store_true", help="enviar una notificación Android (requiere Termux:API)")
     ask.set_defaults(handler=command_ask)
 

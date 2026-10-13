@@ -1,5 +1,6 @@
 import tempfile
 import unittest
+import json
 from pathlib import Path
 from unittest.mock import patch
 
@@ -128,6 +129,94 @@ class AgentSafetyTests(unittest.TestCase):
         with patch.object(agent, "command_wizard", return_value=0) as wizard:
             self.assertEqual(agent.main([]), 0)
         wizard.assert_called_once()
+
+    def test_configure_openai_prompts_masked_and_saves_private_file(self):
+        with tempfile.TemporaryDirectory() as temp:
+            config_path = Path(temp) / "config.json"
+            answers = iter(["1", "", "gpt-test", ""])
+            with patch("builtins.print") as printed:
+                with patch.object(agent, "list_available_models", return_value=[]):
+                    result = agent.configure_provider(
+                        config_path,
+                        input_fn=lambda _prompt: next(answers),
+                        secret_fn=lambda _prompt: "sk-test-private",
+                    )
+            self.assertEqual(result["provider"], "openai")
+            saved = json.loads(config_path.read_text(encoding="utf-8"))
+            self.assertEqual(saved["api_key"], "sk-test-private")
+            self.assertEqual(saved["model"], "gpt-test")
+            self.assertEqual(config_path.stat().st_mode & 0o777, 0o600)
+            self.assertNotIn("sk-test-private", " ".join(str(call) for call in printed.call_args_list))
+
+    def test_configure_ollama_requests_server_and_model(self):
+        with tempfile.TemporaryDirectory() as temp:
+            config_path = Path(temp) / "config.json"
+            answers = iter(["2", "http://192.168.1.5:11434/v1", "qwen2.5-coder:7b", ""])
+            with patch.object(agent, "list_available_models", return_value=[]):
+                result = agent.configure_provider(config_path, input_fn=lambda _prompt: next(answers))
+            self.assertEqual(result["provider"], "ollama")
+            self.assertEqual(result["base_url"], "http://192.168.1.5:11434/v1")
+            self.assertEqual(result["model"], "qwen2.5-coder:7b")
+            self.assertEqual(result["api_key"], "ollama")
+
+    def test_ollama_configuration_rejects_invalid_url_scheme(self):
+        with tempfile.TemporaryDirectory() as temp:
+            answers = iter(["2", "192.168.1.5:11434", "qwen"])
+            with self.assertRaises(ValueError):
+                agent.configure_provider(Path(temp) / "config.json", input_fn=lambda _prompt: next(answers))
+
+    def test_legacy_placeholder_key_is_not_accepted_as_real_credential(self):
+        with patch.object(agent, "load_saved_config", return_value={}):
+            with patch.dict(agent.os.environ, {"OPENAI_API_KEY": "TU_CLAVE_API_DE_OPENAI"}, clear=True):
+                settings = agent.provider_settings()
+        self.assertNotIn("api_key", settings)
+
+    def test_missing_credentials_prompt_for_provider_on_first_interactive_request(self):
+        with patch.object(agent, "load_saved_config", return_value={}):
+            with patch.object(agent, "saved_config_path", return_value=Path("/tmp/config.json")):
+                with patch.dict(agent.os.environ, {}, clear=True):
+                    with patch.object(agent.sys.stdin, "isatty", return_value=True):
+                        with patch.object(agent, "configure_provider", return_value={"provider": "ollama", "api_key": "ollama"}) as configure:
+                            settings = agent.provider_settings(prompt_if_missing=True)
+        configure.assert_called_once_with()
+        self.assertEqual(settings["provider"], "ollama")
+
+    def test_missing_credentials_prompt_ignores_existing_environment_keys(self):
+        with patch.object(agent, "load_saved_config", return_value={}):
+            with patch.dict(agent.os.environ, {}, clear=True):
+                with patch.object(agent.sys.stdin, "isatty", return_value=True):
+                    with patch.object(agent, "configure_provider", return_value={"provider": "ollama", "api_key": "ollama"}) as configure:
+                        settings = agent.provider_settings(prompt_if_missing=True)
+        configure.assert_called_once_with()
+        self.assertEqual(settings["provider"], "ollama")
+
+    def test_chat_and_code_use_different_configured_models(self):
+        from types import SimpleNamespace
+
+        client = type("Client", (), {})()
+        client.chat = type("Chat", (), {})()
+        client.chat.completions = type("Completions", (), {})()
+        client.chat.completions.create = unittest.mock.Mock(
+            return_value=SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(content="ok"))])
+        )
+        with patch.object(agent, "make_client", return_value=client):
+            with patch.object(agent, "provider_settings", return_value={"model": "chat-model", "code_model": "code-model"}):
+                agent.get_ai_response([{"role": "user", "content": "hello"}], purpose="chat")
+                agent.get_ai_response([{"role": "user", "content": "code"}], purpose="code")
+        self.assertEqual([call.kwargs["model"] for call in client.chat.completions.create.call_args_list], ["chat-model", "code-model"])
+
+    def test_configure_selects_models_discovered_from_endpoint(self):
+        with tempfile.TemporaryDirectory() as temp:
+            answers = iter(["2", "http://ollama:11434/v1", "1", "2"])
+            with patch.object(agent, "list_available_models", return_value=["qwen-chat", "qwen-coder"]):
+                result = agent.configure_provider(Path(temp) / "config.json", input_fn=lambda _prompt: next(answers))
+        self.assertEqual(result["model"], "qwen-chat")
+        self.assertEqual(result["code_model"], "qwen-coder")
+
+    def test_model_route_uses_code_model_for_code_requests_or_files(self):
+        self.assertEqual(agent.infer_model_route("¿Qué es una variable?"), "chat")
+        self.assertEqual(agent.infer_model_route("Ayúdame a depurar este bug"), "code")
+        self.assertEqual(agent.infer_model_route("Revisa esto", ["src/main.py"]), "code")
 
 
 if __name__ == "__main__":

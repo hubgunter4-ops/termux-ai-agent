@@ -22,7 +22,17 @@ El instalador instala Python y el cliente `openai`, conserva cualquier archivo d
 
 ## Configurar un modelo
 
-Edita `~/.termux-agent/env`. Para Ollama en otro equipo de tu red, cambia la IP por la dirección del servidor:
+La primera vez que se necesita una conexión, si no hay credenciales configuradas, la CLI abre el diálogo para elegir OpenAI u Ollama. También puedes abrirlo cuando quieras con:
+
+```bash
+termux-ai configure
+```
+
+O elige **4) Configurar OpenAI u Ollama** en el menú principal. Para OpenAI, la clave se solicita sin mostrarla mientras se escribe. Para Ollama, se pregunta la URL del servidor. La configuración intenta consultar los modelos disponibles en ese endpoint para que puedas elegir el modelo de conversación y, por separado, el de generación de código. Si no se puede listar modelos, puedes escribir sus identificadores manualmente. La configuración se guarda en `~/.termux-agent/config.json`, con permisos de lectura y escritura solo para el usuario del teléfono. Ese archivo guarda la clave como texto local: no lo compartas ni lo subas al repositorio. Las variables `AI_API_KEY`, `OPENAI_API_KEY`, `AI_BASE_URL`, `AI_MODEL` y `AI_CODE_MODEL`, si están definidas en el entorno, tienen prioridad sobre los valores guardados.
+
+OpenAI usa una URL base de API (por defecto `https://api.openai.com/v1`) y el identificador del modelo se envía en cada solicitud; no se configura una URL diferente por modelo. Puedes cambiar la URL base si usas un endpoint compatible. El asistente enruta preguntas generales al modelo de conversación y solicitudes de código/depuración o peticiones con archivos adjuntos al modelo de código.
+
+También se pueden definir variables manualmente en `~/.termux-agent/env`. Para Ollama en otro equipo de tu red, cambia la IP por la dirección del servidor:
 
 ```bash
 export AI_BASE_URL="http://192.168.1.20:11434/v1"
@@ -36,11 +46,12 @@ Para un proveedor que use la API OpenAI, configura su clave y modelo:
 
 ```bash
 export AI_API_KEY="tu-clave"
-export AI_MODEL="gpt-4.1-mini"
+export AI_MODEL="gpt-4.1-mini"       # conversaciones generales
+export AI_CODE_MODEL="gpt-4.1"       # opcional: generación/revisión de código
 # export AI_BASE_URL="https://api.proveedor.example/v1"  # solo si el proveedor lo requiere
 ```
 
-`AI_BASE_URL` selecciona el endpoint; `AI_MODEL` el modelo; la autenticación se lee de `AI_API_KEY` o, como compatibilidad, `OPENAI_API_KEY`.
+`AI_BASE_URL` selecciona el endpoint; `AI_MODEL` el modelo general; `AI_CODE_MODEL` el modelo para código; la autenticación se lee de `AI_API_KEY` o, como compatibilidad, `OPENAI_API_KEY`. En Ollama, el diálogo usa `ollama` como valor de autenticación requerido por el cliente compatible.
 
 ## Uso
 
