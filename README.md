@@ -44,6 +44,12 @@ export AI_MODEL="gpt-4.1-mini"
 
 ## Uso
 
+### Interfaz guiada
+
+Ejecuta `termux-ai` sin argumentos o usa `termux-ai wizard` para abrir un menú paso a paso. El menú guía por el análisis de preguntas, diseño de código y ejecución de comandos. En el flujo de código solicita el objetivo, el lenguaje o stack, criterios de aceptación y, opcionalmente, los archivos de contexto. Después muestra el diff y deja la decisión de aplicarlo al usuario.
+
+La interfaz usa colores ANSI automáticamente en terminales compatibles: encabezados y pasos diferenciados, diffs verdes/rojos y avisos resaltados. No requiere paquetes visuales adicionales. Para desactivar colores, define `NO_COLOR=1`.
+
 ### Preguntar y analizar errores
 
 ```bash
