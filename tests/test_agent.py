@@ -181,6 +181,7 @@ class AgentSafetyTests(unittest.TestCase):
             saved = json.loads(config_path.read_text(encoding="utf-8"))
             self.assertEqual(saved["api_key"], "sk-test-private")
             self.assertEqual(saved["model"], "gpt-test")
+            self.assertEqual(saved["base_url"], agent.OPENAI_DEFAULT_URL)
             self.assertEqual(config_path.stat().st_mode & 0o777, 0o600)
             self.assertNotIn("sk-test-private", " ".join(str(call) for call in printed.call_args_list))
 
@@ -233,6 +234,14 @@ class AgentSafetyTests(unittest.TestCase):
                 agent.get_ai_response([{"role": "user", "content": "hello"}], purpose="chat")
                 agent.get_ai_response([{"role": "user", "content": "code"}], purpose="code")
         self.assertEqual([call.args[3]["model"] for call in request.call_args_list], ["chat-model", "code-model"])
+
+    def test_openai_default_base_url_is_used_when_config_has_no_url(self):
+        response = {"choices": [{"message": {"content": "ok"}}]}
+        settings = {"provider": "openai", "api_key": "secret", "model": "gpt-test"}
+        with patch.object(agent, "get_api_config", return_value=settings):
+            with patch.object(agent, "request_api_json", return_value=response) as request:
+                self.assertEqual(agent.get_ai_response([{"role": "user", "content": "hello"}]), "ok")
+        self.assertEqual(request.call_args.args[1], "https://api.openai.com/v1")
 
     def test_model_discovery_reads_openai_compatible_catalog(self):
         with patch.object(agent, "request_api_json", return_value={"data": [{"id": "model-b"}, {"id": "model-a"}, {"object": "permission"}]}) as request:
