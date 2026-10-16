@@ -12,10 +12,10 @@ import shlex
 import shutil
 import subprocess
 import sys
+import urllib.error
+import urllib.request
 from pathlib import Path, PurePosixPath
 from typing import Any
-
-from openai import OpenAI
 
 DEFAULT_MODEL = "gpt-4.1-mini"
 OPENAI_DEFAULT_URL = "https://api.openai.com/v1"
@@ -44,12 +44,58 @@ def load_saved_config(config_path: Path | None = None) -> dict[str, str]:
     return {key: value for key, value in data.items() if key in {"provider", "api_key", "base_url", "model", "code_model"} and isinstance(value, str)}
 
 
+def request_api_json(
+    api_key: str,
+    base_url: str,
+    endpoint: str,
+    payload: dict[str, Any] | None = None,
+    *,
+    timeout: float = 120.0,
+) -> dict[str, Any]:
+    url = f"{(base_url or OPENAI_DEFAULT_URL).rstrip('/')}/{endpoint.lstrip('/')}"
+    headers = {"Accept": "application/json", "Authorization": f"Bearer {api_key}"}
+    body = None
+    method = "GET"
+    if payload is not None:
+        headers["Content-Type"] = "application/json"
+        body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+        method = "POST"
+    request = urllib.request.Request(url, data=body, headers=headers, method=method)
+    try:
+        with urllib.request.urlopen(request, timeout=timeout) as response:
+            result = json.loads(response.read().decode("utf-8"))
+    except urllib.error.HTTPError as exc:
+        detail = ""
+        try:
+            error_data = json.loads(exc.read().decode("utf-8"))
+            error = error_data.get("error", error_data)
+            if isinstance(error, dict) and isinstance(error.get("message"), str):
+                detail = error["message"]
+            elif isinstance(error, str):
+                detail = error
+        except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+            pass
+        detail = detail.replace(api_key, "[CLAVE OCULTA]")[:500] if api_key else detail[:500]
+        message = f"El endpoint respondió HTTP {exc.code}"
+        if detail:
+            message += f": {detail}"
+        else:
+            message += "; revisa la clave, la URL y el modelo configurados"
+        raise RuntimeError(message) from None
+    except (urllib.error.URLError, TimeoutError, OSError):
+        raise RuntimeError("No se pudo conectar con el endpoint. Revisa la URL, la red y que el servidor esté activo.") from None
+    except (UnicodeDecodeError, json.JSONDecodeError):
+        raise RuntimeError("El endpoint devolvió una respuesta que no es JSON válido.") from None
+    if not isinstance(result, dict):
+        raise RuntimeError("El endpoint devolvió una respuesta JSON con formato inesperado.")
+    return result
+
+
 def list_available_models(api_key: str, base_url: str) -> list[str]:
     """Read model identifiers exposed by OpenAI or an OpenAI-compatible endpoint."""
     try:
-        client = OpenAI(api_key=api_key, base_url=base_url or None, timeout=12.0, max_retries=0)
-        page = client.models.list()
-        models = sorted({item.id for item in page.data if getattr(item, "id", None)})
+        result = request_api_json(api_key, base_url, "/models", timeout=12.0)
+        models = sorted({item["id"] for item in result.get("data", []) if isinstance(item, dict) and isinstance(item.get("id"), str)})
         return models[:40]
     except Exception:
         print("No se pudo cargar la lista del endpoint; podrás escribir los identificadores manualmente.", file=sys.stderr)
@@ -145,31 +191,27 @@ def provider_settings(*, prompt_if_missing: bool = False) -> dict[str, str]:
     return config
 
 
-def make_client() -> OpenAI:
+def get_api_config() -> dict[str, str]:
     config = provider_settings(prompt_if_missing=True)
     api_key = config.get("api_key")
     if not api_key:
         raise RuntimeError("Falta la configuración del proveedor. Ejecuta `termux-ai configure` en una terminal interactiva.")
-    return OpenAI(
-        api_key=api_key,
-        base_url=config.get("base_url") or None,
-        timeout=120.0,
-        max_retries=1,
-    )
+    return config
 
 
 def get_ai_response(messages: list[dict[str, str]], *, max_tokens: int = 1200, purpose: str = "chat") -> str:
-    client = make_client()
-    settings = provider_settings()
+    settings = get_api_config()
     model = settings.get("code_model") if purpose == "code" else None
     model = model or settings.get("model", DEFAULT_MODEL)
-    response = client.chat.completions.create(
-        model=model,
-        messages=messages,
-        max_tokens=max_tokens,
+    response = request_api_json(
+        settings.get("api_key", ""),
+        settings.get("base_url", OPENAI_DEFAULT_URL),
+        "/chat/completions",
+        {"model": model, "messages": messages, "max_tokens": max_tokens},
     )
-    content = response.choices[0].message.content
-    if not content:
+    choices = response.get("choices")
+    content = choices[0].get("message", {}).get("content") if isinstance(choices, list) and choices and isinstance(choices[0], dict) else None
+    if not isinstance(content, str) or not content.strip():
         raise RuntimeError("El modelo devolvió una respuesta vacía.")
     return content.strip()
 
@@ -255,7 +297,8 @@ def command_wizard(_args: argparse.Namespace) -> int:
         if choice == "1":
             question = input(paint("¿Qué quieres resolver o entender? ", "bold")).strip()
             if question:
-                selected = select_context_files(root)
+                attach = input("¿Quieres adjuntar archivos del proyecto como contexto? [y/N]: ").strip().lower()
+                selected = select_context_files(root) if attach in {"y", "yes", "s", "sí", "si"} else []
                 command_ask(argparse.Namespace(question=question, file=selected, notify=False))
             continue
         if choice == "2":
@@ -307,7 +350,7 @@ def safe_workspace_path(
     relative = PurePosixPath(name)
     if relative.is_absolute() or any(part in {"..", "."} for part in relative.parts):
         raise ValueError(f"La ruta debe ser relativa al proyecto y no puede salir del directorio: {name}")
-    if any(part in IGNORED_DIRS or part in SENSITIVE_NAMES for part in relative.parts):
+    if any(part in IGNORED_DIRS or part in SENSITIVE_NAMES or part.startswith(".env") for part in relative.parts):
         raise ValueError(f"No se permite acceder a una ruta excluida o sensible: {name}")
 
     path = (root / Path(*relative.parts)).resolve(strict=not allow_missing)

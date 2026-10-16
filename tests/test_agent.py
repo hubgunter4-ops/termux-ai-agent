@@ -1,6 +1,7 @@
+import json
+import io
 import tempfile
 import unittest
-import json
 from pathlib import Path
 from unittest.mock import patch
 
@@ -20,6 +21,13 @@ class AgentSafetyTests(unittest.TestCase):
             (root / ".env").write_text("SECRET=x", encoding="utf-8")
             with self.assertRaises(ValueError):
                 agent.safe_workspace_path(root, ".env")
+
+    def test_rejects_env_variants(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp).resolve()
+            (root / ".env.development").write_text("SECRET=x", encoding="utf-8")
+            with self.assertRaises(ValueError):
+                agent.safe_workspace_path(root, ".env.development")
 
     def test_rejects_symlink_outside_workspace(self):
         with tempfile.TemporaryDirectory() as temp:
@@ -120,6 +128,34 @@ class AgentSafetyTests(unittest.TestCase):
             self.assertIn("Tecnologías preferidas: Python y Flask", task)
             self.assertIn("Criterios de aceptación: Incluye una prueba", task)
 
+    def test_wizard_question_skips_file_list_by_default(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp).resolve()
+            (root / "main.py").write_text("print(2 + 2)\n", encoding="utf-8")
+            answers = iter(["1", "¿Cuánto es 2+2?", "n", "0"])
+            args = agent.build_parser().parse_args(["wizard"])
+            with patch.object(agent.sys.stdin, "isatty", return_value=True):
+                with patch.object(agent, "workspace_root", return_value=root):
+                    with patch.object(agent, "select_context_files") as select_files:
+                        with patch.object(agent, "command_ask", return_value=0) as ask:
+                            with patch("builtins.input", side_effect=answers):
+                                self.assertEqual(agent.command_wizard(args), 0)
+            select_files.assert_not_called()
+            self.assertEqual(ask.call_args.args[0].file, [])
+
+    def test_wizard_question_lists_files_only_after_opt_in(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp).resolve()
+            (root / "main.py").write_text("print(2 + 2)\n", encoding="utf-8")
+            answers = iter(["1", "Revisa este archivo", "s", "1", "0"])
+            args = agent.build_parser().parse_args(["wizard"])
+            with patch.object(agent.sys.stdin, "isatty", return_value=True):
+                with patch.object(agent, "workspace_root", return_value=root):
+                    with patch.object(agent, "command_ask", return_value=0) as ask:
+                        with patch("builtins.input", side_effect=answers):
+                            self.assertEqual(agent.command_wizard(args), 0)
+            self.assertEqual(ask.call_args.args[0].file, ["main.py"])
+
     def test_paint_respects_no_color(self):
         with patch.object(agent.sys.stdout, "isatty", return_value=True):
             with patch.dict(agent.os.environ, {"NO_COLOR": "1"}):
@@ -191,19 +227,48 @@ class AgentSafetyTests(unittest.TestCase):
         self.assertEqual(settings["provider"], "ollama")
 
     def test_chat_and_code_use_different_configured_models(self):
-        from types import SimpleNamespace
-
-        client = type("Client", (), {})()
-        client.chat = type("Chat", (), {})()
-        client.chat.completions = type("Completions", (), {})()
-        client.chat.completions.create = unittest.mock.Mock(
-            return_value=SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(content="ok"))])
-        )
-        with patch.object(agent, "make_client", return_value=client):
-            with patch.object(agent, "provider_settings", return_value={"model": "chat-model", "code_model": "code-model"}):
+        response = {"choices": [{"message": {"content": "ok"}}]}
+        with patch.object(agent, "get_api_config", return_value={"api_key": "secret", "base_url": "https://api.test/v1", "model": "chat-model", "code_model": "code-model"}):
+            with patch.object(agent, "request_api_json", return_value=response) as request:
                 agent.get_ai_response([{"role": "user", "content": "hello"}], purpose="chat")
                 agent.get_ai_response([{"role": "user", "content": "code"}], purpose="code")
-        self.assertEqual([call.kwargs["model"] for call in client.chat.completions.create.call_args_list], ["chat-model", "code-model"])
+        self.assertEqual([call.args[3]["model"] for call in request.call_args_list], ["chat-model", "code-model"])
+
+    def test_model_discovery_reads_openai_compatible_catalog(self):
+        with patch.object(agent, "request_api_json", return_value={"data": [{"id": "model-b"}, {"id": "model-a"}, {"object": "permission"}]}) as request:
+            models = agent.list_available_models("token", "http://localhost:11434/v1")
+        self.assertEqual(models, ["model-a", "model-b"])
+        self.assertEqual(request.call_args.args[2], "/models")
+
+    def test_http_request_uses_openai_compatible_chat_endpoint(self):
+        class FakeResponse:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_args):
+                return False
+
+            def read(self):
+                return b'{"ok": true}'
+
+        payload = {"model": "test-model", "messages": [{"role": "user", "content": "hello"}]}
+        with patch.object(agent.urllib.request, "urlopen", return_value=FakeResponse()) as urlopen:
+            result = agent.request_api_json("secret-value", "https://api.test/v1", "/chat/completions", payload)
+        request = urlopen.call_args.args[0]
+        self.assertEqual(request.full_url, "https://api.test/v1/chat/completions")
+        self.assertEqual(request.get_header("Authorization"), "Bearer secret-value")
+        self.assertEqual(json.loads(request.data.decode("utf-8")), payload)
+        self.assertEqual(result, {"ok": True})
+
+    def test_http_error_detail_is_shown_without_exposing_api_key(self):
+        body = b'{"error":{"message":"Invalid model; supplied token secret-value"}}'
+        error = agent.urllib.error.HTTPError("https://api.test", 400, "Bad Request", None, io.BytesIO(body))
+        with patch.object(agent.urllib.request, "urlopen", side_effect=error):
+            with self.assertRaises(RuntimeError) as caught:
+                agent.request_api_json("secret-value", "https://api.test/v1", "/chat/completions", {"model": "bad"})
+        self.assertIn("HTTP 400", str(caught.exception))
+        self.assertIn("Invalid model", str(caught.exception))
+        self.assertNotIn("secret-value", str(caught.exception))
 
     def test_configure_selects_models_discovered_from_endpoint(self):
         with tempfile.TemporaryDirectory() as temp:
