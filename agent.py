@@ -137,7 +137,9 @@ def configure_provider(
         api_key = secret_fn("Clave API de OpenAI (no se mostrará): ").strip()
         if not api_key:
             raise ValueError("La clave API no puede estar vacía.")
-        base_url = input_fn(f"URL base de la API [{OPENAI_DEFAULT_URL}]: ").strip() or OPENAI_DEFAULT_URL
+        base_url = input_fn(
+            f"URL base de OpenAI [{OPENAI_DEFAULT_URL}] (Enter = API oficial de OpenAI): "
+        ).strip() or OPENAI_DEFAULT_URL
         if not base_url.startswith(("http://", "https://")):
             raise ValueError("La URL base debe comenzar con http:// o https://.")
         base_url = base_url.rstrip("/")

@@ -126,14 +126,13 @@ Ejemplo para OpenAI:
 
 ```bash
 export AI_API_KEY="tu-clave"
+export AI_BASE_URL="https://api.openai.com/v1"
 export AI_MODEL="gpt-4.1-mini"
 # Opcional; si no se define, se usa AI_MODEL para las tareas de código.
 export AI_CODE_MODEL="ID-DE-MODELO-PARA-CODIGO"
-# Solo cambia esto para usar una API compatible o un endpoint personalizado.
-# export AI_BASE_URL="https://api.proveedor.example/v1"
 ```
 
-`AI_BASE_URL` elige el endpoint; `AI_MODEL` el modelo general; `AI_CODE_MODEL` el modelo para tareas de programación. La credencial se lee de `AI_API_KEY` o, como compatibilidad, `OPENAI_API_KEY`. Si defines estas variables en el entorno, tienen prioridad sobre los valores de `config.json`. Después de modificar el archivo manualmente, recarga la configuración con `source ~/.bashrc` o vuelve a abrir Termux.
+Para OpenAI, la base oficial es `https://api.openai.com/v1`; el asistente ya la propone y guarda al pulsar Enter durante la configuración. Solo reemplaza `AI_BASE_URL` si vas a usar otro endpoint compatible con OpenAI. `AI_BASE_URL` elige el endpoint; `AI_MODEL` el modelo general; `AI_CODE_MODEL` el modelo para tareas de programación. La credencial se lee de `AI_API_KEY` o, como compatibilidad, `OPENAI_API_KEY`. Si defines estas variables en el entorno, tienen prioridad sobre los valores de `config.json`. Después de modificar el archivo manualmente, recarga la configuración con `source ~/.bashrc` o vuelve a abrir Termux.
 
 ## Uso
 
